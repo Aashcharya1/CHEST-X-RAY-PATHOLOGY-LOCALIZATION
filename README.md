@@ -1,122 +1,107 @@
-Chest X-Ray Pathology Localization using Multimodal Autoencoder
-This project implements a deep learning model to automatically localize and segment pathologies in chest X-ray images based on textual findings from radiology reports. It utilizes a Multimodal U-Net Autoencoder architecture that fuses visual features from the X-ray with semantic features from the text report.
+Chest X-Ray Pathology Localization
+Multimodal autoencoder framework that conditions image segmentation on textual radiology findings to deliver precise, interpretable localization of thoracic pathologies.
 
-Project Description
-The core of this project is a two-phase training approach designed to handle limited labeled medical data:
+## Executive Summary
+Radiology reports often describe abnormalities that are visually subtle or spatially diffuse on chest X-rays. This project links the narrative report to the corresponding image, enabling the model to surface regions that match the described pathology. A two-stage training curriculum—self-supervised visual pre-training followed by multimodal fine-tuning—maximizes the value of limited pixel-level annotations while maintaining clinical interpretability.
 
-Phase 1: Self-Supervised Autoencoder Pre-training
+- **Problem**: Localize pathologies in chest radiographs given the accompanying free-text report.
+- **Solution**: ResNet34 U-Net encoder fused with CLIP ViT-B/32 text embeddings at the bottleneck.
+- **Outcome**: Produces binary masks and overlay visualizations aligned with radiologist findings.
+- **Artifacts**: `my_pretrained_encoder.pth` (Phase 1) and `best_model.pth` (Phase 2).
 
-Goal: Teach the model to understand the structure and features of Chest X-rays without needing manually drawn masks.
+## Key Features
+- **Multimodal fusion** that leverages frozen CLIP text embeddings for semantic grounding.
+- **Curriculum learning** approach improves generalization when labeled masks are scarce.
+- **Single-notebook workflow** (`Main.ipynb`) for data setup, training, evaluation, and visualization.
+- **Interpretable outputs** through side-by-side image, ground-truth mask, and predicted overlay.
+- **Hardware-aware design** supporting CPU, single GPU, or Colab runtimes with AMP training.
 
-Method: A standard U-Net Autoencoder (with a ResNet34 backbone) is trained on a large set of ~7,400 unlabeled X-ray images. The objective is simple image reconstruction (Input Image → Output Image), forcing the encoder to learn robust visual representations of the lungs and thorax.
+## Repository Structure
+| Path | Description |
+| --- | --- |
+| `Main.ipynb` | Primary notebook covering setup, pre-training, fine-tuning, inference, and visualization. |
+| `README.md` | Project documentation, setup instructions, and roadmap (this file). |
 
-Phase 2: Multimodal Supervised Fine-Tuning
+## Dataset Expectations
+- **Source**: Indiana University Chest X-Ray Collection (OpenI, mirrored on Kaggle).
+- **Folders & Files**  
+  - `images/images_normalized/` – ~7,400 unlabeled PA views for Phase 1 reconstruction.  
+  - `masked/` – ~240 binary masks paired with specific UIDs for Phase 2 supervision.  
+  - `indiana_reports.csv` – Findings and impression text linked via UID.  
+  - `indiana_projections.csv` – UID-to-image filename mapping.  
+- **Preprocessing Guidelines**  
+  - Resize or pad to 256×256, normalize pixel intensities (z-score or min-max).  
+  - Remove PHI, handle missing reports, and clean boilerplate phrases.  
+  - Tokenize text with the CLIP BPE tokenizer (handled in-notebook).  
+  - Create patient-level splits to prevent leakage across train/val/test sets.  
 
-Goal: Train the model to generate a binary mask highlighting the disease described in the text report.
+## Environment & Tooling
+1. **Python**: 3.9 or newer.  
+2. **Core Dependencies**:
+   ```
+   pip install torch torchvision transformers segmentation-models-pytorch \
+               pandas scikit-learn pillow matplotlib
+   ```
+3. **Optional GPU acceleration**:  
+   - Verify CUDA via `nvidia-smi`.  
+   - Install the PyTorch build matching your CUDA toolkit.  
+4. **Recommended utilities**: Weights & Biases or TensorBoard for experiment tracking.  
 
-Method: The pre-trained image encoder from Phase 1 is combined with a frozen CLIP (Contrastive Language-Image Pre-Training) text encoder.
+## Architectural Overview
+- **Image Encoder**: ResNet34 backbone (ImageNet initialization) within a U-Net encoder path.  
+- **Text Encoder**: CLIP ViT-B/32 (frozen). Produces a 512-d embedding per report.  
+- **Fusion Mechanism**: Concatenate text embedding with the deepest visual feature map, then project back to the encoder channel width.  
+- **Decoder**: U-Net decoder with skip connections restoring spatial resolution.  
+- **Head**: 1×1 convolution + sigmoid to yield a binary pathology mask.  
 
-Architecture:
+## Training Workflow
+### Phase 1 · Self-Supervised Visual Pre-Training
+- **Objective**: Learn chest X-ray structure via reconstruction.  
+- **Loss**: Mean Squared Error, optionally supplemented with SSIM.  
+- **Outputs**: Encoder checkpoint `my_pretrained_encoder.pth`, PSNR/SSIM diagnostics, sample reconstructions.  
 
-Image Encoder: ResNet34 (initialized with Phase 1 weights).
+### Phase 2 · Multimodal Fine-Tuning
+- **Inputs**: Paired (image, report, mask) triplets.  
+- **Training strategy**:  
+  - Load Phase 1 encoder weights.  
+  - Freeze CLIP encoder; train fusion module, decoder, and segmentation head.  
+  - Apply Dice + BCE loss with positive-class weighting to handle small lesions.  
+  - Monitor Dice/IoU on validation masks; keep the best-performing checkpoint (`best_model.pth`).  
 
-Text Encoder: CLIP (ViT-B/32) processes the "findings" text.
+## Notebook Walkthrough (`Main.ipynb`)
+1. **Runtime configuration** – seed everything, select device, mount cloud storage if applicable.  
+2. **Data module** – define PyTorch datasets/dataloaders for unlabeled and labeled splits.  
+3. **Phase 1 loop** – train autoencoder, log reconstructions, and save weights periodically.  
+4. **Phase 2 loop** – rehydrate encoder weights, instantiate CLIP text encoder, train multimodal U-Net.  
+5. **Inference & visualization** – plot input images, ground truth, predictions, and blended overlays; export figures or GIFs.  
 
-Fusion: Text and Image embeddings are concatenated at the bottleneck.
+## Evaluation & Reporting
+- **Quantitative metrics**: Dice coefficient, IoU, pixel accuracy per pathology, calibration plots.  
+- **Qualitative review**: Present tri-panel figures (image / ground truth / prediction) and overlay masks for stakeholder review.  
+- **Suggested analyses**:  
+  - Grad-CAM or attention rollout on the encoder for interpretability.  
+  - Sensitivity testing by perturbing report text to ensure the model reacts appropriately.  
+  - Cross-dataset evaluation (e.g., CheXlocalize) to gauge robustness.  
 
-Decoder: A U-Net decoder upsamples the fused features to produce the final segmentation mask.
+## Troubleshooting & FAQ
+- **Class imbalance**: Increase BCE `pos_weight`, experiment with focal or Tversky loss, or oversample minority pathologies.  
+- **VRAM limitations**: Downscale to 224×224, use mixed-precision, or accumulate gradients.  
+- **Noisy text**: Strip templated “normal” statements and consolidate duplicated findings to sharpen the conditioning signal.  
+- **Checkpoint hygiene**: Save both encoder-only and full-model weights for flexible re-use.  
+- **Training stability**: Use cosine LR schedules and early stopping on validation Dice to avoid overfitting.  
 
-Dataset
-The project uses the Indiana University Chest X-Ray Collection (OpenI).
+## Roadmap
+- Add lightweight transformer encoders (e.g., MobileViT) for edge deployment.  
+- Introduce section-aware text attention (Findings vs Impression weighting).  
+- Package environment definitions (Dockerfile, `environment.yml`).  
+- Extend evaluation suite to include Grad-CAM dashboards and automated report generation.  
+- Integrate hyperparameter sweeps via Weights & Biases or Ray Tune.  
 
-Source: Kaggle / OpenI
+## Citations & Acknowledgements
+- Indiana University / OpenI for the chest X-ray corpus.  
+- OpenAI CLIP for robust language-vision representations.  
+- `segmentation-models-pytorch` for reliable U-Net implementations.  
+- PyTorch community for the training ecosystem and tooling.  
 
-Structure:
-
-images/images_normalized/: Contains ~7,400 unlabeled X-ray images (used for Phase 1).
-
-masked/: Contains ~240 binary masks corresponding to specific pathologies (used for Phase 2 targets).
-
-indiana_reports.csv: Contains the text reports (findings/impressions) linked by UID.
-
-indiana_projections.csv: Maps UIDs to filenames.
-
-Requirements
-Python 3.x
-
-PyTorch (Deep Learning Framework)
-
-Segmentation Models PyTorch (smp) (For U-Net implementation)
-
-Transformers (HuggingFace) (For CLIP model)
-
-Pandas (Data manipulation)
-
-Pillow (PIL) (Image loading)
-
-Scikit-learn (Data splitting)
-
-Matplotlib (Visualization)
-
-Installation:
-
-Bash
-
-pip install torch torchvision transformers segmentation-models-pytorch pandas matplotlib scikit-learn
-Model Architecture
-The Autoencoder (U-Net)
-The model follows a U-Shape architecture with skip connections:
-
-Encoder (Downsampling): A ResNet34 backbone extracts hierarchical features from the input X-ray image (256x256).
-
-Bottleneck (Fusion): * The deepest image features (512 channels) are extracted.
-
-The textual report is tokenized and passed through CLIP to get a 512-dimensional embedding.
-
-The text embedding is expanded and concatenated with the image features.
-
-A convolution layer fuses them back to the original channel size.
-
-Decoder (Upsampling): Transpose convolutions upsample the features back to the original resolution, using skip connections from the encoder to preserve spatial detail.
-
-Segmentation Head: A final 1x1 convolution produces the binary mask prediction.
-
-How to Use
-1. Data Setup
-Ensure your dataset is uploaded to Google Drive as a zip file (Dataset.zip) or available locally. The code will automatically copy and unzip it to the Colab/local environment for speed.
-
-2. Phase 1: Pre-training (Unsupervised)
-Run the Phase 1 training cell. This trains the U-Net to act as a standard autoencoder, reconstructing the input images.
-
-Input: Unlabeled X-ray images.
-
-Loss: Mean Squared Error (MSE).
-
-Output: Saves my_pretrained_encoder.pth.
-
-3. Phase 2: Fine-tuning (Multimodal)
-Run the Phase 2 training cell. This loads the encoder weights from Phase 1 and trains the full multimodal system.
-
-Input: X-ray Image + Text Report.
-
-Target: Ground Truth Mask.
-
-Loss: Combined Dice Loss + Binary Cross Entropy (BCE) with class weighting (to handle small mask areas).
-
-Output: Saves best_model.pth.
-
-4. Visualization
-Run the inference cell to visualize results. It displays:
-
-Original Image: The input X-ray.
-
-Ground Truth: The manual annotation.
-
-Predicted Mask: The model's generated heatmap/mask.
-
-Acknowledgments
-Segmentation Models PyTorch: For the efficient U-Net implementation.
-
-OpenAI: For the pre-trained CLIP model.
-
-Indiana University/OpenI: For the public medical dataset.
+## License
+Specify the license that governs redistribution and derivative work (MIT, Apache-2.0, or institution-specific). Update this section before releasing the repository publicly.  
